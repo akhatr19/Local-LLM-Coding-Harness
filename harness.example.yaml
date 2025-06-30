@@ -1,0 +1,43 @@
+litellm:
+  default_profile: local
+  profiles:
+    local:
+      model: openai/qwen3-32b
+      api_base: http://localhost:4000/v1
+      timeout_seconds: 120
+      max_tokens: 8192
+      temperature: 0.1
+
+searxng:
+  base_url: http://localhost:8080
+  timeout_seconds: 20
+  result_limit: 8
+
+retrieval:
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  lexical_limit: 30
+  vector_limit: 30
+  final_limit: 20
+  chunk_lines: 120
+  chunk_overlap_lines: 20
+
+agents:
+  investigator_count: 4
+  planner_count: 3
+  judge_count: 3
+  max_concurrency: 4
+  clarification_rounds: 1
+
+docker:
+  image: python:3.11.13-slim-bookworm
+  cpu_limit: 2.0
+  memory_mb: 4096
+  pids_limit: 256
+  command_timeout_seconds: 300
+  run_timeout_seconds: 3600
+  network_disabled: true
+
+artifacts:
+  root: .harness
+  retain_failed_runs: true
+
