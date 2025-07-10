@@ -148,6 +148,16 @@ class RunStatus(StrEnum):
     SANDBOX_FAILED = "sandbox_failed"
 
 
+TERMINAL_FAILURE_STATUSES = frozenset(
+    {
+        RunStatus.FAILED,
+        RunStatus.PLAN_BLOCKED,
+        RunStatus.RESEARCH_FAILED,
+        RunStatus.SANDBOX_FAILED,
+    }
+)
+
+
 class StageResult(ContractModel):
     stage: RunStage
     status: RunStatus
