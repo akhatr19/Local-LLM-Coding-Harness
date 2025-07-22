@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import platform
+import shutil
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -19,7 +20,9 @@ from rich.table import Table
 
 from local_llm_harness import __version__
 from local_llm_harness.config import load_settings
+from local_llm_harness.indexing import RepositoryIndexer, SentenceTransformerEmbedder
 from local_llm_harness.model_gateway import LiteLLMGateway, ModelGatewayError
+from local_llm_harness.repository import RepositoryError, RepositoryInspector
 from local_llm_harness.storage import RunNotFoundError, RunStore
 
 app = typer.Typer(
@@ -91,6 +94,28 @@ def doctor(
             "LiteLLM package",
             "PASS" if importlib.util.find_spec("litellm") is not None else "FAIL",
             "installed" if importlib.util.find_spec("litellm") is not None else "missing",
+        ),
+        (
+            "Git",
+            "PASS" if shutil.which("git") is not None else "FAIL",
+            shutil.which("git") or "missing",
+        ),
+        (
+            "ripgrep",
+            "PASS" if shutil.which("rg") is not None else "FAIL",
+            shutil.which("rg") or "missing",
+        ),
+        (
+            "ChromaDB package",
+            "PASS" if importlib.util.find_spec("chromadb") is not None else "FAIL",
+            "installed" if importlib.util.find_spec("chromadb") is not None else "missing",
+        ),
+        (
+            "Sentence Transformers package",
+            "PASS" if importlib.util.find_spec("sentence_transformers") is not None else "FAIL",
+            "installed"
+            if importlib.util.find_spec("sentence_transformers") is not None
+            else "missing",
         ),
         (
             "Artifact storage",
@@ -185,6 +210,57 @@ def inspect_run(
             console.print(f"- {artifact.relative_to(store.root)}")
     else:
         console.print("- none")
+
+
+@app.command("index")
+def index_repository(
+    repository: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Repository root to index.",
+        ),
+    ],
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            exists=False,
+            dir_okay=False,
+            help="Optional YAML configuration file.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Rebuild even when the fingerprint is unchanged."),
+    ] = False,
+) -> None:
+    """Build or reuse the persistent hybrid retrieval index."""
+
+    try:
+        settings = load_settings(config)
+        inspector = RepositoryInspector(repository)
+        embedder = SentenceTransformerEmbedder(settings.retrieval.embedding_model)
+        indexer = RepositoryIndexer(
+            inspector,
+            settings.retrieval,
+            settings.artifacts.root / "indexes",
+            embedder,
+        )
+        outcome = indexer.index(force=force)
+    except (ValueError, ValidationError, RepositoryError, RuntimeError) as exc:
+        console.print(f"[red]Indexing failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    action = "Reused" if outcome.reused else "Built"
+    console.print(f"[green]{action} repository index[/green]")
+    console.print(f"Repository: {outcome.manifest.repository}")
+    console.print(f"Commit: {outcome.manifest.commit or 'uncommitted'}")
+    console.print(f"Chunks: {outcome.manifest.chunk_count}")
+    console.print(f"Embedding model: {outcome.manifest.embedding_model}")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from typer.testing import CliRunner
 
 from local_llm_harness import __version__
@@ -8,12 +10,20 @@ from local_llm_harness.storage import RunStore
 runner = CliRunner()
 
 
+class CliFakeEmbedder:
+    model_name = "fake/cli-embedding"
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return [[float("parser" in text.lower()), 1.0] for text in texts]
+
+
 def test_help_lists_foundation_commands() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
     assert "doctor" in result.stdout
     assert "version" in result.stdout
+    assert "index" in result.stdout
 
 
 def test_version() -> None:
@@ -30,6 +40,7 @@ def test_doctor_accepts_example_config() -> None:
     assert "PASS" in result.stdout
     assert "LiteLLM package" in result.stdout
     assert "SKIP" in result.stdout
+    assert "ChromaDB package" in result.stdout
 
 
 def test_doctor_reports_invalid_config(tmp_path) -> None:
@@ -73,3 +84,25 @@ def test_inspect_missing_run_is_an_error(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Unable to inspect run" in result.stdout
+
+
+def test_index_command_builds_and_reuses_index(monkeypatch, sample_repository, tmp_path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config = tmp_path / "harness.yaml"
+    config.write_text(
+        f"artifacts:\n  root: {artifact_root}\nretrieval:\n"
+        "  chunk_lines: 20\n  chunk_overlap_lines: 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "local_llm_harness.cli.SentenceTransformerEmbedder",
+        lambda model_name: CliFakeEmbedder(),
+    )
+
+    first = runner.invoke(app, ["index", str(sample_repository), "--config", str(config)])
+    second = runner.invoke(app, ["index", str(sample_repository), "--config", str(config)])
+
+    assert first.exit_code == 0
+    assert "Built repository index" in first.stdout
+    assert second.exit_code == 0
+    assert "Reused repository index" in second.stdout
