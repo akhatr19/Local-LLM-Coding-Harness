@@ -50,6 +50,10 @@ class InvestigationTopic(ContractModel):
     search_terms: list[str] = Field(min_length=1)
 
 
+class InvestigationTopicSet(ContractModel):
+    topics: list[InvestigationTopic] = Field(min_length=1, max_length=4)
+
+
 class InvestigatorReport(ContractModel):
     topic_id: str
     summary: str = Field(min_length=1)

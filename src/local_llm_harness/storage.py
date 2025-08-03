@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -21,6 +21,8 @@ from local_llm_harness.contracts import (
     TaskSpec,
     utc_now,
 )
+
+ArtifactModel = TypeVar("ArtifactModel", bound=BaseModel)
 
 STAGE_ORDER = (
     RunStage.INTAKE,
@@ -252,6 +254,27 @@ class RunStore:
         if not run_directory.exists():
             return []
         return sorted(path for path in run_directory.rglob("*") if path.is_file())
+
+    def read_artifact_model(
+        self,
+        run_id: UUID | str,
+        relative_path: str,
+        model: type[ArtifactModel],
+    ) -> ArtifactModel:
+        """Load and validate a JSON artifact stored inside a run directory."""
+
+        self.get_run(run_id)
+        pure_path = PurePosixPath(relative_path)
+        if pure_path.is_absolute() or ".." in pure_path.parts or not pure_path.parts:
+            raise UnsafeArtifactPathError("artifact path must remain inside the run directory")
+        run_directory = (self.runs_root / str(run_id)).resolve()
+        target = run_directory.joinpath(*pure_path.parts).resolve()
+        if not target.is_relative_to(run_directory):
+            raise UnsafeArtifactPathError("artifact path must remain inside the run directory")
+        try:
+            return model.model_validate_json(target.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise RunStoreError(f"artifact does not exist: {relative_path}") from exc
 
     def _save_state(self, state: RunState) -> None:
         with self._connect() as connection:
