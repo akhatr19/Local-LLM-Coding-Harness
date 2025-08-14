@@ -12,6 +12,8 @@ searxng:
   base_url: http://localhost:8080
   timeout_seconds: 20
   result_limit: 8
+  fetch_result_limit: 3
+  max_fetch_bytes: 200000
 
 retrieval:
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
@@ -40,4 +42,3 @@ docker:
 artifacts:
   root: .harness
   retain_failed_runs: true
-

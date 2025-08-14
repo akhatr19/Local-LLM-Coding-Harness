@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
@@ -71,10 +74,12 @@ class InvestigationReport(ContractModel):
 
 
 class PlanStep(ContractModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     order: int = Field(ge=1)
     description: str = Field(min_length=1)
-    target_files: list[str] = Field(default_factory=list)
-    verification: list[str] = Field(default_factory=list)
+    target_files: tuple[str, ...] = ()
+    verification: tuple[str, ...] = ()
 
 
 class PlanCandidate(ContractModel):
@@ -115,11 +120,30 @@ class PlanScore(ContractModel):
 
 
 class ResearchFinding(ContractModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     query: str = Field(min_length=1)
     claim: str = Field(min_length=1)
     source_url: HttpUrl
     source_title: str = Field(min_length=1)
     relevance: str = Field(min_length=1)
+
+
+class ResearchQuerySet(ContractModel):
+    queries: list[str] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def queries_must_be_unique(self) -> ResearchQuerySet:
+        if any(not query.strip() for query in self.queries):
+            raise ValueError("research queries cannot be blank")
+        if len(set(self.queries)) != len(self.queries):
+            raise ValueError("research queries must be unique")
+        return self
+
+
+class ResearchReport(ContractModel):
+    findings: list[ResearchFinding] = Field(min_length=1)
+    conflicts: list[str] = Field(default_factory=list)
 
 
 class FinalPlan(ContractModel):
@@ -130,7 +154,68 @@ class FinalPlan(ContractModel):
     title: str = Field(min_length=1)
     steps: tuple[PlanStep, ...] = Field(min_length=1)
     research: tuple[ResearchFinding, ...] = ()
-    plan_hash: str = Field(min_length=1)
+    plan_hash: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        task_id: str,
+        selected_candidate_id: str,
+        title: str,
+        steps: Sequence[PlanStep],
+        research: Sequence[ResearchFinding],
+    ) -> Self:
+        payload = cls._hash_payload(
+            task_id=task_id,
+            selected_candidate_id=selected_candidate_id,
+            title=title,
+            steps=steps,
+            research=research,
+        )
+        return cls(
+            task_id=task_id,
+            selected_candidate_id=selected_candidate_id,
+            title=title,
+            steps=tuple(steps),
+            research=tuple(research),
+            plan_hash=cls._digest(payload),
+        )
+
+    @model_validator(mode="after")
+    def hash_must_match_content(self) -> FinalPlan:
+        payload = self._hash_payload(
+            task_id=self.task_id,
+            selected_candidate_id=self.selected_candidate_id,
+            title=self.title,
+            steps=self.steps,
+            research=self.research,
+        )
+        if self.plan_hash != self._digest(payload):
+            raise ValueError("plan_hash does not match final plan content")
+        return self
+
+    @staticmethod
+    def _hash_payload(
+        *,
+        task_id: str,
+        selected_candidate_id: str,
+        title: str,
+        steps: Sequence[PlanStep],
+        research: Sequence[ResearchFinding],
+    ) -> dict[str, Any]:
+        return {
+            "task_id": task_id,
+            "selected_candidate_id": selected_candidate_id,
+            "title": title,
+            "steps": [step.model_dump(mode="json") for step in steps],
+            "research": [finding.model_dump(mode="json") for finding in research],
+        }
+
+    @staticmethod
+    def _digest(payload: dict[str, Any]) -> str:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
 
 class RunStage(StrEnum):

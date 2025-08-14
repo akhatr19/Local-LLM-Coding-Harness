@@ -11,6 +11,7 @@ license = { text = "MIT" }
 authors = [{ name = "Local LLM Coding Harness contributors" }]
 dependencies = [
   "chromadb==1.0.13",
+  "httpx==0.28.1",
   "litellm==1.73.6",
   "pydantic==2.11.7",
   "pydantic-settings==2.10.1",

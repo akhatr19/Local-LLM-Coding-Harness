@@ -36,6 +36,8 @@ class SearxNGSettings(BaseModel):
     base_url: str = "http://localhost:8080"
     timeout_seconds: float = Field(default=20.0, gt=0)
     result_limit: int = Field(default=8, ge=1, le=50)
+    fetch_result_limit: int = Field(default=3, ge=1, le=10)
+    max_fetch_bytes: int = Field(default=200_000, ge=1_024, le=2_000_000)
 
 
 class RetrievalSettings(BaseModel):
@@ -55,8 +57,8 @@ class RetrievalSettings(BaseModel):
 
 class AgentSettings(BaseModel):
     investigator_count: int = Field(default=4, ge=1, le=4)
-    planner_count: int = Field(default=3, ge=1)
-    judge_count: int = Field(default=3, ge=1)
+    planner_count: int = Field(default=3, ge=3, le=3)
+    judge_count: int = Field(default=3, ge=3, le=3)
     max_concurrency: int = Field(default=4, ge=1)
     clarification_rounds: int = Field(default=1, ge=0, le=1)
 

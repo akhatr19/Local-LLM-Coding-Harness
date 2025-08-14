@@ -56,16 +56,32 @@ def test_plan_steps_must_be_sequential() -> None:
 
 
 def test_final_plan_is_immutable() -> None:
-    plan = FinalPlan(
+    plan = FinalPlan.create(
         task_id="issue-1",
         selected_candidate_id="plan-a",
         title="Parser fix",
         steps=(PlanStep(order=1, description="Patch it"),),
-        plan_hash="abc123",
+        research=(),
     )
 
     with pytest.raises(ValidationError, match="frozen"):
         plan.title = "Changed"  # type: ignore[misc]
+
+    with pytest.raises(ValidationError, match="frozen"):
+        plan.steps[0].description = "Changed"  # type: ignore[misc]
+
+    assert isinstance(plan.steps[0].target_files, tuple)
+
+
+def test_final_plan_rejects_a_mismatched_hash() -> None:
+    with pytest.raises(ValidationError, match="plan_hash does not match"):
+        FinalPlan(
+            task_id="issue-1",
+            selected_candidate_id="plan-a",
+            title="Parser fix",
+            steps=(PlanStep(order=1, description="Patch it"),),
+            plan_hash="0" * 64,
+        )
 
 
 def test_evaluation_mode_is_constrained() -> None:

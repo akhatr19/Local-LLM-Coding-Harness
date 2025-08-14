@@ -220,7 +220,7 @@ class InvestigationWorkflow:
             raise InvestigationError(
                 f"investigator returned topic {report.topic_id!r}; expected {topic.topic_id!r}"
             )
-        self._validate_evidence(report.evidence)
+        validate_evidence(self.inspector, report.evidence)
         return report
 
     async def _consolidate(
@@ -270,36 +270,42 @@ class InvestigationWorkflow:
         )
 
     def _validate_report(self, report: InvestigationReport) -> None:
-        self._validate_evidence(report.evidence)
+        validate_evidence(self.inspector, report.evidence)
         if report.is_clear and not report.evidence:
             raise EvidenceValidationError("a clear investigation must contain repository evidence")
 
-    def _validate_evidence(self, evidence_items: Sequence[EvidenceRef]) -> None:
-        for evidence in evidence_items:
-            try:
-                actual = self.inspector.read_file(
-                    evidence.file_path,
-                    start_line=evidence.start_line,
-                    end_line=evidence.end_line,
-                )
-            except RepositoryError as exc:
-                raise EvidenceValidationError(
-                    f"invalid evidence location {evidence.file_path}: "
-                    f"{evidence.start_line}-{evidence.end_line}"
-                ) from exc
-            if actual.end_line != evidence.end_line:
-                raise EvidenceValidationError(
-                    f"evidence range exceeds {evidence.file_path}: {evidence.end_line}"
-                )
-            if _normalize_excerpt(actual.content) != _normalize_excerpt(evidence.excerpt):
-                raise EvidenceValidationError(
-                    f"evidence excerpt does not match {evidence.file_path}:"
-                    f"{evidence.start_line}-{evidence.end_line}"
-                )
 
-
-def _normalize_excerpt(value: str) -> str:
+def normalize_excerpt(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.strip().splitlines())
+
+
+def validate_evidence(
+    inspector: RepositoryInspector,
+    evidence_items: Sequence[EvidenceRef],
+) -> None:
+    """Reject evidence that does not exactly map to repository file content."""
+
+    for evidence in evidence_items:
+        try:
+            actual = inspector.read_file(
+                evidence.file_path,
+                start_line=evidence.start_line,
+                end_line=evidence.end_line,
+            )
+        except RepositoryError as exc:
+            raise EvidenceValidationError(
+                f"invalid evidence location {evidence.file_path}: "
+                f"{evidence.start_line}-{evidence.end_line}"
+            ) from exc
+        if actual.end_line != evidence.end_line:
+            raise EvidenceValidationError(
+                f"evidence range exceeds {evidence.file_path}: {evidence.end_line}"
+            )
+        if normalize_excerpt(actual.content) != normalize_excerpt(evidence.excerpt):
+            raise EvidenceValidationError(
+                f"evidence excerpt does not match {evidence.file_path}:"
+                f"{evidence.start_line}-{evidence.end_line}"
+            )
 
 
 def render_investigation_markdown(report: InvestigationReport) -> str:
