@@ -35,8 +35,12 @@ docker:
   cpu_limit: 2.0
   memory_mb: 4096
   pids_limit: 256
+  disk_mb: 1024
+  tmpfs_mb: 256
   command_timeout_seconds: 300
   run_timeout_seconds: 3600
+  max_commands: 12
+  max_agent_steps: 24
   network_disabled: true
 
 artifacts:

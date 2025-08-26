@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -19,11 +20,17 @@ from rich.console import Console
 from rich.table import Table
 
 from local_llm_harness import __version__
+from local_llm_harness.coding import CodingStatus, CodingWorkflow
 from local_llm_harness.config import load_settings
+from local_llm_harness.contracts import TaskSpec
 from local_llm_harness.indexing import RepositoryIndexer, SentenceTransformerEmbedder
+from local_llm_harness.investigation import InvestigationError, InvestigationWorkflow
 from local_llm_harness.model_gateway import LiteLLMGateway, ModelGatewayError
+from local_llm_harness.planning import PlanningError, PlanningResearchWorkflow
 from local_llm_harness.repository import RepositoryError, RepositoryInspector
-from local_llm_harness.storage import RunNotFoundError, RunStore
+from local_llm_harness.research import SearxNGClient
+from local_llm_harness.sandbox import SandboxError
+from local_llm_harness.storage import RunNotFoundError, RunStore, RunStoreError
 
 app = typer.Typer(
     name="harness",
@@ -261,6 +268,163 @@ def index_repository(
     console.print(f"Commit: {outcome.manifest.commit or 'uncommitted'}")
     console.print(f"Chunks: {outcome.manifest.chunk_count}")
     console.print(f"Embedding model: {outcome.manifest.embedding_model}")
+
+
+@app.command("run")
+def run_pipeline(
+    repository: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Clean Git repository to investigate and modify in a disposable sandbox.",
+        ),
+    ],
+    issue_file: Annotated[
+        Path,
+        typer.Option(
+            "--issue-file",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="UTF-8 file containing the coding issue.",
+        ),
+    ],
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Configured LiteLLM model profile."),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            exists=False,
+            dir_okay=False,
+            help="Optional YAML configuration file.",
+        ),
+    ] = None,
+    run_id: Annotated[
+        UUID | None,
+        typer.Option("--run-id", help="Resume an existing run."),
+    ] = None,
+) -> None:
+    """Run investigation, planning, research, and sandboxed implementation."""
+
+    try:
+        if issue_file.stat().st_size > 1_000_000:
+            raise ValueError("issue file exceeds the 1 MB limit")
+        issue = issue_file.read_text(encoding="utf-8").strip()
+        if not issue:
+            raise ValueError("issue file cannot be empty")
+        settings = load_settings(config)
+        selected_profile = profile or settings.litellm.default_profile
+        if selected_profile not in settings.litellm.profiles:
+            raise ValueError(f"unknown model profile: {selected_profile}")
+        result = asyncio.run(
+            _run_full_pipeline(
+                repository=repository,
+                issue=issue,
+                profile=selected_profile,
+                settings=settings,
+                run_id=run_id,
+            )
+        )
+    except (
+        UnicodeDecodeError,
+        ValueError,
+        ValidationError,
+        ModelGatewayError,
+        RepositoryError,
+        RunStoreError,
+        InvestigationError,
+        PlanningError,
+        SandboxError,
+        RuntimeError,
+    ) as exc:
+        console.print(f"[red]Run failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Run: {result.run_id}")
+    console.print(f"Implementation status: {result.result.status.value}")
+    console.print(f"Changed files: {len(result.result.changed_files)}")
+    console.print(f"Patch artifact: runs/{result.run_id}/implementation/changes.patch")
+    if result.result.status is CodingStatus.FAILED:
+        raise typer.Exit(code=1)
+
+
+async def _run_full_pipeline(*, repository, issue, profile, settings, run_id):
+    inspector = RepositoryInspector(repository)
+    commit = inspector.current_commit()
+    if commit is None:
+        raise RepositoryError("full pipeline requires a Git repository with a commit")
+    store = RunStore(settings.artifacts.root)
+    if run_id is None:
+        task_digest = hashlib.sha256(
+            f"{repository.resolve()}\0{commit}\0{issue}".encode()
+        ).hexdigest()[:16]
+        task = TaskSpec(
+            task_id=f"task-{task_digest}",
+            repository=repository.resolve(),
+            problem_statement=issue,
+            base_commit=commit,
+        )
+    else:
+        task = store.read_artifact_model(run_id, "task.json", TaskSpec)
+        if task.repository.expanduser().resolve() != repository.resolve():
+            raise ValueError("resume repository does not match the stored task")
+        if task.problem_statement != issue:
+            raise ValueError("resume issue does not match the stored task")
+        if task.base_commit is not None and task.base_commit != commit:
+            raise ValueError("resume repository no longer matches the stored base revision")
+
+    embedder = SentenceTransformerEmbedder(settings.retrieval.embedding_model)
+    indexer = RepositoryIndexer(
+        inspector,
+        settings.retrieval,
+        settings.artifacts.root / "indexes",
+        embedder,
+    )
+    indexer.index()
+    gateway = LiteLLMGateway(settings.litellm)
+    investigation = await InvestigationWorkflow(
+        gateway=gateway,
+        profile_name=profile,
+        inspector=inspector,
+        retriever=indexer,
+        store=store,
+        settings=settings.agents,
+    ).run(task, run_id=run_id)
+
+    research_client = SearxNGClient(settings.searxng)
+    try:
+        planning = await PlanningResearchWorkflow(
+            gateway=gateway,
+            profile_name=profile,
+            inspector=inspector,
+            research_client=research_client,
+            store=store,
+            settings=settings.agents,
+        ).run(
+            task,
+            investigation.report,
+            run_id=investigation.run_id,
+        )
+    finally:
+        await research_client.close()
+
+    return await CodingWorkflow(
+        gateway=gateway,
+        profile_name=profile,
+        store=store,
+        settings=settings.docker,
+    ).run(
+        task,
+        planning.final_plan,
+        run_id=investigation.run_id,
+    )
 
 
 if __name__ == "__main__":

@@ -68,8 +68,12 @@ class DockerSettings(BaseModel):
     cpu_limit: float = Field(default=2.0, gt=0)
     memory_mb: int = Field(default=4096, ge=256)
     pids_limit: int = Field(default=256, ge=16)
+    disk_mb: int = Field(default=1024, ge=64)
+    tmpfs_mb: int = Field(default=256, ge=16)
     command_timeout_seconds: int = Field(default=300, ge=1)
     run_timeout_seconds: int = Field(default=3600, ge=1)
+    max_commands: int = Field(default=12, ge=1, le=100)
+    max_agent_steps: int = Field(default=24, ge=1, le=200)
     network_disabled: bool = True
 
 
