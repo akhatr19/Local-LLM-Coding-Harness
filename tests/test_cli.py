@@ -24,6 +24,7 @@ def test_help_lists_foundation_commands() -> None:
     assert "doctor" in result.stdout
     assert "version" in result.stdout
     assert "index" in result.stdout
+    assert "eval" in result.stdout
 
 
 def test_version() -> None:
@@ -31,6 +32,15 @@ def test_version() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == __version__
+
+
+def test_eval_help_describes_resume_and_smoke_modes() -> None:
+    result = runner.invoke(app, ["eval", "--help"])
+
+    assert result.exit_code == 0
+    assert "--resume" in result.stdout
+    assert "--smoke" in result.stdout
+    assert "--manifest" in result.stdout
 
 
 def test_doctor_accepts_example_config() -> None:

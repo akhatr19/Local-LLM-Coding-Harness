@@ -21,6 +21,9 @@ dependencies = [
   "typer==0.16.0",
 ]
 
+[project.optional-dependencies]
+swebench = ["swebench==4.0.3"]
+
 [project.scripts]
 harness = "local_llm_harness.cli:app"
 

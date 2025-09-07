@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.util
 import json
 import os
@@ -20,17 +19,25 @@ from rich.console import Console
 from rich.table import Table
 
 from local_llm_harness import __version__
-from local_llm_harness.coding import CodingStatus, CodingWorkflow
+from local_llm_harness.coding import CodingStatus
 from local_llm_harness.config import load_settings
-from local_llm_harness.contracts import TaskSpec
+from local_llm_harness.evaluation import (
+    BenchmarkManifest,
+    EvaluationBudget,
+    EvaluationError,
+    EvaluationHarness,
+    EvaluationReport,
+    EvaluationStore,
+)
 from local_llm_harness.indexing import RepositoryIndexer, SentenceTransformerEmbedder
-from local_llm_harness.investigation import InvestigationError, InvestigationWorkflow
+from local_llm_harness.investigation import InvestigationError
 from local_llm_harness.model_gateway import LiteLLMGateway, ModelGatewayError
-from local_llm_harness.planning import PlanningError, PlanningResearchWorkflow
+from local_llm_harness.pipeline import run_full_pipeline
+from local_llm_harness.planning import PlanningError
 from local_llm_harness.repository import RepositoryError, RepositoryInspector
-from local_llm_harness.research import SearxNGClient
 from local_llm_harness.sandbox import SandboxError
 from local_llm_harness.storage import RunNotFoundError, RunStore, RunStoreError
+from local_llm_harness.swebench import SWEbenchComparisonRunner
 
 app = typer.Typer(
     name="harness",
@@ -324,7 +331,7 @@ def run_pipeline(
         if selected_profile not in settings.litellm.profiles:
             raise ValueError(f"unknown model profile: {selected_profile}")
         result = asyncio.run(
-            _run_full_pipeline(
+            run_full_pipeline(
                 repository=repository,
                 issue=issue,
                 profile=selected_profile,
@@ -355,76 +362,83 @@ def run_pipeline(
         raise typer.Exit(code=1)
 
 
-async def _run_full_pipeline(*, repository, issue, profile, settings, run_id):
-    inspector = RepositoryInspector(repository)
-    commit = inspector.current_commit()
-    if commit is None:
-        raise RepositoryError("full pipeline requires a Git repository with a commit")
-    store = RunStore(settings.artifacts.root)
-    if run_id is None:
-        task_digest = hashlib.sha256(
-            f"{repository.resolve()}\0{commit}\0{issue}".encode()
-        ).hexdigest()[:16]
-        task = TaskSpec(
-            task_id=f"task-{task_digest}",
-            repository=repository.resolve(),
-            problem_statement=issue,
-            base_commit=commit,
-        )
-    else:
-        task = store.read_artifact_model(run_id, "task.json", TaskSpec)
-        if task.repository.expanduser().resolve() != repository.resolve():
-            raise ValueError("resume repository does not match the stored task")
-        if task.problem_statement != issue:
-            raise ValueError("resume issue does not match the stored task")
-        if task.base_commit is not None and task.base_commit != commit:
-            raise ValueError("resume repository no longer matches the stored base revision")
+@app.command("eval")
+def evaluate(
+    manifest: Annotated[
+        Path,
+        typer.Option(
+            "--manifest",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Benchmark manifest; defaults to the supplied ten-instance experiment.",
+        ),
+    ] = Path("benchmarks/swebench_lite_10.yaml"),
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Configured LiteLLM model profile."),
+    ] = None,
+    mode: Annotated[
+        str,
+        typer.Option("--mode", help="Comparison mode: baseline, full, or both."),
+    ] = "both",
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", dir_okay=False, help="Optional YAML configuration file."),
+    ] = None,
+    resume: Annotated[
+        UUID | None,
+        typer.Option("--resume", help="Resume a persisted evaluation UUID."),
+    ] = None,
+    smoke: Annotated[
+        bool,
+        typer.Option("--smoke", help="Run only the first manifest instance in both modes."),
+    ] = False,
+) -> None:
+    """Compare direct baseline and full pipeline on SWE-bench 4.0.3."""
 
-    embedder = SentenceTransformerEmbedder(settings.retrieval.embedding_model)
-    indexer = RepositoryIndexer(
-        inspector,
-        settings.retrieval,
-        settings.artifacts.root / "indexes",
-        embedder,
-    )
-    indexer.index()
-    gateway = LiteLLMGateway(settings.litellm)
-    investigation = await InvestigationWorkflow(
-        gateway=gateway,
-        profile_name=profile,
-        inspector=inspector,
-        retriever=indexer,
-        store=store,
-        settings=settings.agents,
-    ).run(task, run_id=run_id)
-
-    research_client = SearxNGClient(settings.searxng)
     try:
-        planning = await PlanningResearchWorkflow(
-            gateway=gateway,
-            profile_name=profile,
-            inspector=inspector,
-            research_client=research_client,
-            store=store,
-            settings=settings.agents,
-        ).run(
-            task,
-            investigation.report,
-            run_id=investigation.run_id,
+        settings = load_settings(config)
+        selected_profile = profile or settings.litellm.default_profile
+        if selected_profile not in settings.litellm.profiles:
+            raise ValueError(f"unknown model profile: {selected_profile}")
+        if mode not in {"baseline", "full", "both"}:
+            raise ValueError("mode must be baseline, full, or both")
+        modes = ("baseline", "full") if mode == "both" else (mode,)
+        benchmark = BenchmarkManifest.load(manifest)
+        if benchmark.swebench_version != settings.evaluation.swebench_version:
+            raise ValueError("manifest SWE-bench version differs from configuration")
+        if smoke:
+            benchmark = benchmark.model_copy(
+                update={"name": f"{benchmark.name}-smoke", "instances": benchmark.instances[:1]}
+            )
+        budget = EvaluationBudget.from_settings(
+            settings.litellm.profiles[selected_profile],
+            settings.docker,
+            settings.evaluation,
         )
-    finally:
-        await research_client.close()
+        store = EvaluationStore(settings.artifacts.root)
+        run = asyncio.run(
+            EvaluationHarness(store, SWEbenchComparisonRunner(settings)).run(
+                benchmark,
+                selected_profile,
+                budget,
+                modes=modes,
+                evaluation_id=resume,
+            )
+        )
+    except (ValueError, ValidationError, EvaluationError) as exc:
+        console.print(f"[red]Evaluation failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
-    return await CodingWorkflow(
-        gateway=gateway,
-        profile_name=profile,
-        store=store,
-        settings=settings.docker,
-    ).run(
-        task,
-        planning.final_plan,
-        run_id=investigation.run_id,
-    )
+    report = EvaluationReport.from_run(run)
+    console.print(f"Evaluation: {run.evaluation_id}")
+    for metrics in report.metrics:
+        console.print(
+            f"{metrics.mode}: {metrics.resolved}/{metrics.attempts} ({metrics.resolution_rate:.1%})"
+        )
+    console.print(f"Reports: evaluations/{run.evaluation_id}/results.json and comparison.md")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+name: SWE-bench manual matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Configured LiteLLM profile
+        required: true
+        default: local
+      config:
+        description: Harness configuration on the self-hosted runner
+        required: true
+        default: harness.example.yaml
+
+jobs:
+  compare:
+    runs-on: self-hosted
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.7.19
+      - run: uv sync --locked --extra swebench
+      - name: Run supplied ten-instance comparison
+        run: >-
+          uv run --locked --extra swebench harness eval
+          --manifest benchmarks/swebench_lite_10.yaml
+          --config "${{ inputs.config }}"
+          --profile "${{ inputs.profile }}"
+          --mode both

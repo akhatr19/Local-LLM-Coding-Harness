@@ -82,6 +82,16 @@ class ArtifactSettings(BaseModel):
     retain_failed_runs: bool = True
 
 
+class EvaluationSettings(BaseModel):
+    dataset_name: str = "princeton-nlp/SWE-bench_Lite"
+    split: str = "test"
+    swebench_version: str = "4.0.3"
+    max_model_calls: int = Field(default=100, ge=1)
+    max_total_tokens: int = Field(default=500_000, ge=1)
+    grading_timeout_seconds: int = Field(default=3600, ge=1)
+    cache_level: str = Field(default="env", pattern="^(none|base|env|instance)$")
+
+
 class HarnessSettings(BaseSettings):
     """Top-level settings. Environment values take precedence over YAML values."""
 
@@ -97,6 +107,7 @@ class HarnessSettings(BaseSettings):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     agents: AgentSettings = Field(default_factory=AgentSettings)
     docker: DockerSettings = Field(default_factory=DockerSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     artifacts: ArtifactSettings = Field(default_factory=ArtifactSettings)
 
     @classmethod

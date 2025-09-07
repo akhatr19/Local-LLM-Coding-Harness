@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from local_llm_harness.config import LiteLLMSettings
 from local_llm_harness.model_gateway import (
+    BudgetedModelGateway,
     FakeModelGateway,
     LiteLLMGateway,
     ModelGatewayError,
@@ -46,6 +47,22 @@ async def test_structured_response_and_usage_are_recorded() -> None:
     assert gateway.usage_for("local").prompt_tokens == 5
     assert requests[0]["api_key"] == "secret"
     assert requests[0]["response_format"]["type"] == "json_schema"
+
+
+@pytest.mark.asyncio
+async def test_budgeted_gateway_enforces_equal_run_limits() -> None:
+    gateway = BudgetedModelGateway(
+        FakeModelGateway([Answer(value="one"), Answer(value="two")]),
+        max_calls=1,
+        max_total_tokens=100,
+    )
+
+    result = await gateway.complete("local", [], Answer)
+
+    assert result.output.value == "one"
+    assert gateway.calls == 1
+    with pytest.raises(ModelGatewayError, match="call budget"):
+        await gateway.complete("local", [], Answer)
 
 
 @pytest.mark.asyncio

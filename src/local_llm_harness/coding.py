@@ -134,9 +134,7 @@ class CodingWorkflow:
 
         transcript: list[CommandRecord] = []
         workspace: DisposableWorkspace | None = None
-        attempt_number = sum(
-            attempt.stage is RunStage.IMPLEMENTATION for attempt in state.stages
-        )
+        attempt_number = sum(attempt.stage is RunStage.IMPLEMENTATION for attempt in state.stages)
         workspace_path = (
             self.store.root
             / "workspaces"
@@ -183,9 +181,7 @@ class CodingWorkflow:
         transcript: list[CommandRecord],
     ) -> CodingResult:
         allowed_targets = {
-            PurePosixPath(path).as_posix()
-            for step in plan.steps
-            for path in step.target_files
+            PurePosixPath(path).as_posix() for step in plan.steps for path in step.target_files
         }
         if not allowed_targets:
             raise SandboxError("final plan contains no implementation targets")
@@ -280,7 +276,9 @@ class CodingWorkflow:
             content = path.read_text(encoding="utf-8")
             excerpt = content[: min(30_000, remaining)]
             remaining -= len(excerpt)
-            files.append(f"<repository-file path={json.dumps(relative_path)}>\n{excerpt}\n</repository-file>")
+            files.append(
+                f"<repository-file path={json.dumps(relative_path)}>\n{excerpt}\n</repository-file>"
+            )
             if remaining <= 0:
                 break
         history = "\n\n".join(

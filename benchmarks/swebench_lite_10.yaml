@@ -1,0 +1,15 @@
+name: supplied-swebench-lite-10
+dataset_name: princeton-nlp/SWE-bench_Lite
+split: test
+swebench_version: 4.0.3
+instances:
+  - pvlib__pvlib-python-1707
+  - pvlib__pvlib-python-1072
+  - sqlfluff__sqlfluff-1625
+  - sqlfluff__sqlfluff-2419
+  - django__django-10914
+  - django__django-10924
+  - astropy__astropy-12907
+  - astropy__astropy-14182
+  - matplotlib__matplotlib-18869
+  - matplotlib__matplotlib-22711

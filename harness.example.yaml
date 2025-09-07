@@ -43,6 +43,15 @@ docker:
   max_agent_steps: 24
   network_disabled: true
 
+evaluation:
+  dataset_name: princeton-nlp/SWE-bench_Lite
+  split: test
+  swebench_version: 4.0.3
+  max_model_calls: 100
+  max_total_tokens: 500000
+  grading_timeout_seconds: 3600
+  cache_level: env
+
 artifacts:
   root: .harness
   retain_failed_runs: true

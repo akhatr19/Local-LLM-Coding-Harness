@@ -258,6 +258,53 @@ class FakeModelGateway:
         )
 
 
+class BudgetedModelGateway:
+    """Apply a total call/token budget while preserving the configured gateway."""
+
+    def __init__(
+        self,
+        gateway: ModelGateway,
+        *,
+        max_calls: int,
+        max_total_tokens: int,
+    ) -> None:
+        if max_calls < 1 or max_total_tokens < 1:
+            raise ValueError("model budgets must be positive")
+        self.gateway = gateway
+        self.max_calls = max_calls
+        self.max_total_tokens = max_total_tokens
+        self.calls = 0
+        self.usage = ModelUsage()
+
+    async def complete(
+        self,
+        profile_name: str,
+        messages: Sequence[Message],
+        response_model: type[ResponseModel],
+        *,
+        max_attempts: int = 3,
+    ) -> ModelResult[ResponseModel]:
+        if self.calls >= self.max_calls:
+            raise ModelGatewayError("evaluation model-call budget exhausted")
+        if self.usage.total_tokens >= self.max_total_tokens:
+            raise ModelGatewayError("evaluation token budget exhausted")
+        self.calls += 1
+        result = await self.gateway.complete(
+            profile_name,
+            messages,
+            response_model,
+            max_attempts=max_attempts,
+        )
+        self.usage = ModelUsage(
+            prompt_tokens=self.usage.prompt_tokens + result.usage.prompt_tokens,
+            completion_tokens=self.usage.completion_tokens + result.usage.completion_tokens,
+            total_tokens=self.usage.total_tokens + result.usage.total_tokens,
+        )
+        if self.usage.total_tokens > self.max_total_tokens:
+            raise ModelGatewayError("evaluation token budget exceeded")
+        return result
+
+
 def json_response(content: Mapping[str, Any]) -> str:
     """Convenience helper for deterministic fake responses."""
 
