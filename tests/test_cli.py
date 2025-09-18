@@ -25,6 +25,7 @@ def test_help_lists_foundation_commands() -> None:
     assert "version" in result.stdout
     assert "index" in result.stdout
     assert "eval" in result.stdout
+    assert "prune" in result.stdout
 
 
 def test_version() -> None:
@@ -61,6 +62,15 @@ def test_doctor_reports_invalid_config(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Configuration error" in result.stdout
+
+
+def test_doctor_help_lists_live_checks() -> None:
+    result = runner.invoke(app, ["doctor", "--help"])
+
+    assert result.exit_code == 0
+    assert "--strict" in result.stdout
+    assert "--check-services" in result.stdout
+    assert "--check-embeddings" in result.stdout
 
 
 def test_inspect_displays_persisted_run(tmp_path) -> None:

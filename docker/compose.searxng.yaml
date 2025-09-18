@@ -1,0 +1,20 @@
+name: harness-services
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:2025.6.30-39c50dc@sha256:5a9a87decb510d2bc922dbe62ce5a35226b51ec5760746ae251b7f0ff39aee71
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,nosuid,nodev,noexec
+
+volumes:
+  searxng-cache:

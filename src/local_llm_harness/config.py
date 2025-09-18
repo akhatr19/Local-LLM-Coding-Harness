@@ -64,7 +64,10 @@ class AgentSettings(BaseModel):
 
 
 class DockerSettings(BaseModel):
-    image: str = "python:3.11.13-slim-bookworm"
+    image: str = (
+        "python:3.11.13-slim-bookworm@"
+        "sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
+    )
     cpu_limit: float = Field(default=2.0, gt=0)
     memory_mb: int = Field(default=4096, ge=256)
     pids_limit: int = Field(default=256, ge=16)
@@ -80,6 +83,16 @@ class DockerSettings(BaseModel):
 class ArtifactSettings(BaseModel):
     root: Path = Path(".harness")
     retain_failed_runs: bool = True
+    retention_days: int = Field(default=30, ge=1)
+    max_completed_runs: int = Field(default=100, ge=1)
+
+
+class LoggingSettings(BaseModel):
+    level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    json_file: str = "logs/harness.jsonl"
+    max_bytes: int = Field(default=10_000_000, ge=1024)
+    backup_count: int = Field(default=3, ge=1, le=20)
+    console: bool = False
 
 
 class EvaluationSettings(BaseModel):
@@ -109,6 +122,7 @@ class HarnessSettings(BaseSettings):
     docker: DockerSettings = Field(default_factory=DockerSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     artifacts: ArtifactSettings = Field(default_factory=ArtifactSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     @classmethod
     def settings_customise_sources(

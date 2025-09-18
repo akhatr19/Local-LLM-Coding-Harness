@@ -43,6 +43,7 @@ exclude-newer = "2025-07-01T00:00:00Z"
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = ["docker: requires a local Docker daemon and the pinned sandbox image"]
 
 [tool.ruff]
 target-version = "py311"

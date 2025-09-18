@@ -31,7 +31,7 @@ agents:
   clarification_rounds: 1
 
 docker:
-  image: python:3.11.13-slim-bookworm
+  image: python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
   cpu_limit: 2.0
   memory_mb: 4096
   pids_limit: 256
@@ -55,3 +55,12 @@ evaluation:
 artifacts:
   root: .harness
   retain_failed_runs: true
+  retention_days: 30
+  max_completed_runs: 100
+
+logging:
+  level: INFO
+  json_file: logs/harness.jsonl
+  max_bytes: 10000000
+  backup_count: 3
+  console: false

@@ -1,0 +1,24 @@
+litellm:
+  default_profile: qwen3-32b
+  profiles:
+    qwen3-32b:
+      model: openai/qwen3-32b
+      api_base: http://127.0.0.1:4000/v1
+      api_key: local
+      timeout_seconds: 120
+      max_tokens: 8192
+      temperature: 0.1
+    qwen3-instruct-30b:
+      model: openai/qwen3-instruct-30b-a3b
+      api_base: http://127.0.0.1:4000/v1
+      api_key: local
+      timeout_seconds: 120
+      max_tokens: 8192
+      temperature: 0.1
+    gpt-oss-20b:
+      model: openai/gpt-oss-20b
+      api_base: http://127.0.0.1:4000/v1
+      api_key: local
+      timeout_seconds: 120
+      max_tokens: 8192
+      temperature: 0.1

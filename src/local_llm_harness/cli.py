@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
-import os
-import platform
-import shutil
-import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -21,6 +17,7 @@ from rich.table import Table
 from local_llm_harness import __version__
 from local_llm_harness.coding import CodingStatus
 from local_llm_harness.config import load_settings
+from local_llm_harness.diagnostics import collect_diagnostics
 from local_llm_harness.evaluation import (
     BenchmarkManifest,
     EvaluationBudget,
@@ -32,6 +29,7 @@ from local_llm_harness.evaluation import (
 from local_llm_harness.indexing import RepositoryIndexer, SentenceTransformerEmbedder
 from local_llm_harness.investigation import InvestigationError
 from local_llm_harness.model_gateway import LiteLLMGateway, ModelGatewayError
+from local_llm_harness.observability import configure_logging
 from local_llm_harness.pipeline import run_full_pipeline
 from local_llm_harness.planning import PlanningError
 from local_llm_harness.repository import RepositoryError, RepositoryInspector
@@ -52,13 +50,6 @@ def version() -> None:
     """Print the installed harness version."""
 
     typer.echo(__version__)
-
-
-def _nearest_existing_parent(path: Path) -> Path:
-    candidate = path.expanduser().resolve()
-    while not candidate.exists() and candidate != candidate.parent:
-        candidate = candidate.parent
-    return candidate
 
 
 @app.command()
@@ -86,6 +77,27 @@ def doctor(
             help="Make one minimal live call to the configured default model.",
         ),
     ] = False,
+    check_services: Annotated[
+        bool,
+        typer.Option(
+            "--check-services",
+            help="Contact Docker and SearXNG.",
+        ),
+    ] = False,
+    check_embeddings: Annotated[
+        bool,
+        typer.Option(
+            "--check-embeddings",
+            help="Load the configured embedding model and encode a probe.",
+        ),
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Run every live check and treat unavailable components as failures.",
+        ),
+    ] = False,
 ) -> None:
     """Validate the local runtime and optionally contact the default model."""
 
@@ -95,50 +107,22 @@ def doctor(
         console.print(f"[red]Configuration error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    artifact_parent = _nearest_existing_parent(settings.artifacts.root)
-    checks: list[tuple[str, str, str]] = [
-        ("Python", "PASS" if sys.version_info >= (3, 11) else "FAIL", platform.python_version()),
-        ("Configuration", "PASS", "valid"),
-        (
-            "Default model profile",
-            "PASS" if settings.litellm.default_profile in settings.litellm.profiles else "FAIL",
-            settings.litellm.default_profile,
-        ),
-        (
-            "LiteLLM package",
-            "PASS" if importlib.util.find_spec("litellm") is not None else "FAIL",
-            "installed" if importlib.util.find_spec("litellm") is not None else "missing",
-        ),
-        (
-            "Git",
-            "PASS" if shutil.which("git") is not None else "FAIL",
-            shutil.which("git") or "missing",
-        ),
-        (
-            "ripgrep",
-            "PASS" if shutil.which("rg") is not None else "FAIL",
-            shutil.which("rg") or "missing",
-        ),
-        (
-            "ChromaDB package",
-            "PASS" if importlib.util.find_spec("chromadb") is not None else "FAIL",
-            "installed" if importlib.util.find_spec("chromadb") is not None else "missing",
-        ),
-        (
-            "Sentence Transformers package",
-            "PASS" if importlib.util.find_spec("sentence_transformers") is not None else "FAIL",
-            "installed"
-            if importlib.util.find_spec("sentence_transformers") is not None
-            else "missing",
-        ),
-        (
-            "Artifact storage",
-            "PASS" if os.access(artifact_parent, os.W_OK) else "FAIL",
-            str(artifact_parent),
-        ),
-    ]
+    results = collect_diagnostics(
+        settings,
+        project_root=_project_root(),
+        check_services=check_services,
+        check_embeddings=check_embeddings,
+        strict=strict,
+    )
+    checks = [(result.name, result.status, result.details) for result in results]
+    checks.append(("Default model profile", "PASS", settings.litellm.default_profile))
+    try:
+        log_path = configure_logging(settings.logging, settings.artifacts.root)
+        checks.append(("Structured log", "PASS", str(log_path)))
+    except (OSError, ValueError) as exc:
+        checks.append(("Structured log", "FAIL", str(exc)))
 
-    if check_model:
+    if check_model or strict:
         try:
             model = asyncio.run(LiteLLMGateway(settings.litellm).check_connection())
             checks.append(("Model connectivity", "PASS", model))
@@ -159,6 +143,13 @@ def doctor(
         console.print_json(json.dumps(settings.redacted_dict()))
     if any(status == "FAIL" for _, status, _ in checks):
         raise typer.Exit(code=1)
+
+
+def _project_root() -> Path:
+    for candidate in (Path.cwd(), *Path(__file__).resolve().parents):
+        if (candidate / "pyproject.toml").is_file() and (candidate / "uv.lock").is_file():
+            return candidate
+    return Path.cwd()
 
 
 @app.command("inspect")
@@ -182,6 +173,7 @@ def inspect_run(
 
     try:
         settings = load_settings(config)
+        configure_logging(settings.logging, settings.artifacts.root)
         store = RunStore(settings.artifacts.root)
         state = store.get_run(run_id)
     except (ValueError, ValidationError, RunNotFoundError) as exc:
@@ -226,6 +218,45 @@ def inspect_run(
         console.print("- none")
 
 
+@app.command("prune")
+def prune_artifacts(
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", dir_okay=False, help="Optional YAML configuration file."),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Remove the selected run metadata and artifact directories.",
+        ),
+    ] = False,
+) -> None:
+    """Preview or apply configured run-artifact retention."""
+
+    try:
+        settings = load_settings(config)
+        configure_logging(settings.logging, settings.artifacts.root)
+        store = RunStore(settings.artifacts.root)
+        cutoff = datetime.now(UTC) - timedelta(days=settings.artifacts.retention_days)
+        result = store.prune_runs(
+            cutoff=cutoff,
+            max_completed_runs=settings.artifacts.max_completed_runs,
+            retain_failed_runs=settings.artifacts.retain_failed_runs,
+            dry_run=not apply,
+        )
+    except (ValueError, ValidationError, RunStoreError) as exc:
+        console.print(f"[red]Unable to prune artifacts:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    action = "Removed" if apply else "Would remove"
+    console.print(f"{action} {len(result.selected)} run(s).")
+    for run_id in result.selected:
+        console.print(f"- {run_id}")
+    if not apply:
+        console.print("No files were changed. Re-run with --apply to remove them.")
+
+
 @app.command("index")
 def index_repository(
     repository: Annotated[
@@ -256,6 +287,7 @@ def index_repository(
 
     try:
         settings = load_settings(config)
+        configure_logging(settings.logging, settings.artifacts.root)
         inspector = RepositoryInspector(repository)
         embedder = SentenceTransformerEmbedder(settings.retrieval.embedding_model)
         indexer = RepositoryIndexer(
@@ -327,6 +359,7 @@ def run_pipeline(
         if not issue:
             raise ValueError("issue file cannot be empty")
         settings = load_settings(config)
+        configure_logging(settings.logging, settings.artifacts.root)
         selected_profile = profile or settings.litellm.default_profile
         if selected_profile not in settings.litellm.profiles:
             raise ValueError(f"unknown model profile: {selected_profile}")
@@ -400,6 +433,7 @@ def evaluate(
 
     try:
         settings = load_settings(config)
+        configure_logging(settings.logging, settings.artifacts.root)
         selected_profile = profile or settings.litellm.default_profile
         if selected_profile not in settings.litellm.profiles:
             raise ValueError(f"unknown model profile: {selected_profile}")

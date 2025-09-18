@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -17,6 +18,8 @@ from local_llm_harness.repository import RepositoryError, RepositoryInspector
 from local_llm_harness.research import SearxNGClient
 from local_llm_harness.storage import RunStore
 
+logger = logging.getLogger(__name__)
+
 
 async def run_full_pipeline(
     *,
@@ -28,6 +31,15 @@ async def run_full_pipeline(
     gateway: ModelGateway | None = None,
     research_client: SearxNGClient | None = None,
 ) -> CodingOutcome:
+    logger.info(
+        "pipeline started",
+        extra={
+            "event": "pipeline.started",
+            "repository": repository,
+            "profile": profile,
+            "resume_run_id": run_id,
+        },
+    )
     inspector = RepositoryInspector(repository)
     commit = inspector.current_commit()
     if commit is None:
@@ -84,9 +96,18 @@ async def run_full_pipeline(
         if research_client is None:
             await selected_research.close()
 
-    return await CodingWorkflow(
+    outcome = await CodingWorkflow(
         gateway=selected_gateway,
         profile_name=profile,
         store=store,
         settings=settings.docker,
     ).run(task, planning.final_plan, run_id=investigation.run_id)
+    logger.info(
+        "pipeline finished",
+        extra={
+            "event": "pipeline.finished",
+            "run_id": outcome.run_id,
+            "status": outcome.result.status.value,
+        },
+    )
+    return outcome

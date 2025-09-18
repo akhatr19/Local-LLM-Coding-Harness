@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 from uuid import UUID
@@ -32,6 +35,7 @@ STAGE_ORDER = (
     RunStage.IMPLEMENTATION,
     RunStage.EVALUATION,
 )
+logger = logging.getLogger(__name__)
 
 
 class RunStoreError(RuntimeError):
@@ -48,6 +52,12 @@ class InvalidTransitionError(RunStoreError):
 
 class UnsafeArtifactPathError(RunStoreError):
     """Raised when an artifact path escapes its run directory."""
+
+
+class PruneResult(BaseModel):
+    selected: tuple[UUID, ...]
+    removed: tuple[UUID, ...]
+    dry_run: bool
 
 
 class RunStore:
@@ -112,6 +122,10 @@ class RunStore:
                 ),
             )
         self.write_artifact(state.run_id, "task.json", task)
+        logger.info(
+            "run created",
+            extra={"event": "run.created", "run_id": state.run_id, "task_id": task.task_id},
+        )
         return state
 
     def get_run(self, run_id: UUID | str) -> RunState:
@@ -146,6 +160,14 @@ class RunStore:
         )
         state.updated_at = started_at
         self._save_state(state)
+        logger.info(
+            "stage started",
+            extra={
+                "event": "stage.started",
+                "run_id": state.run_id,
+                "stage": requested_stage.value,
+            },
+        )
         return state
 
     def complete_stage(
@@ -174,6 +196,14 @@ class RunStore:
             state.status = RunStatus.PENDING
         state.updated_at = finished_at
         self._save_state(state)
+        logger.info(
+            "stage completed",
+            extra={
+                "event": "stage.completed",
+                "run_id": state.run_id,
+                "stage": active.stage.value,
+            },
+        )
         return state
 
     def fail_stage(
@@ -194,6 +224,16 @@ class RunStore:
         state.status = status
         state.updated_at = finished_at
         self._save_state(state)
+        logger.error(
+            "stage failed",
+            extra={
+                "event": "stage.failed",
+                "run_id": state.run_id,
+                "stage": state.current_stage.value,
+                "status": status.value,
+                "error": error,
+            },
+        )
         return state
 
     def resume_run(self, run_id: UUID | str) -> RunState:
@@ -275,6 +315,52 @@ class RunStore:
             return model.model_validate_json(target.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise RunStoreError(f"artifact does not exist: {relative_path}") from exc
+
+    def prune_runs(
+        self,
+        *,
+        cutoff: datetime,
+        max_completed_runs: int,
+        retain_failed_runs: bool,
+        dry_run: bool = True,
+    ) -> PruneResult:
+        if cutoff.tzinfo is None:
+            raise ValueError("prune cutoff must include a timezone")
+        if max_completed_runs < 1:
+            raise ValueError("max_completed_runs must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM runs ORDER BY updated_at DESC"
+            ).fetchall()
+        states = [RunState.model_validate_json(row["state_json"]) for row in rows]
+        selected: list[UUID] = []
+        completed_count = 0
+        for state in states:
+            if state.status is RunStatus.COMPLETED:
+                completed_count += 1
+                if state.updated_at < cutoff or completed_count > max_completed_runs:
+                    selected.append(state.run_id)
+            elif (
+                state.status in TERMINAL_FAILURE_STATUSES
+                and not retain_failed_runs
+                and state.updated_at < cutoff
+            ):
+                selected.append(state.run_id)
+
+        removed: list[UUID] = []
+        if not dry_run:
+            for run_id in selected:
+                directory = self.runs_root / str(run_id)
+                if directory.exists():
+                    shutil.rmtree(directory)
+                with self._connect() as connection:
+                    connection.execute("DELETE FROM runs WHERE run_id = ?", (str(run_id),))
+                removed.append(run_id)
+                logger.info(
+                    "run artifacts removed",
+                    extra={"event": "run.pruned", "run_id": run_id},
+                )
+        return PruneResult(selected=tuple(selected), removed=tuple(removed), dry_run=dry_run)
 
     def _save_state(self, state: RunState) -> None:
         with self._connect() as connection:
